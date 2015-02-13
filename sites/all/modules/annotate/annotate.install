@@ -1,0 +1,190 @@
+<?php
+
+/**
+ * Implementation of hook_schema()
+ */
+function annotate_schema() {
+  $schema['annotate'] = array(
+    'description' => 'stores notes on a one note per user per node base.',
+    'fields' => array(
+      'aid' => array(
+        'description' => 'Unique ID for annotation entities',
+        'type' => 'serial'
+      ),
+      'type' => array(
+        'description' => 'bundle annotation belongs to.',
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'title' => array(
+        'desciption' => 'The title of this annotation',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'uid' => array(
+        'description' => 'User ID of this annotation',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0
+      ),
+      'entity_type' => array(
+        'description' => 'Refering entity type',
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'entity_id' => array(
+        'description' => 'Refering entity id',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0
+      ),
+      'note' => array(
+        'type' => 'text',
+        'not null' => TRUE
+      ),
+      'note_format' => array(
+        'type' => 'varchar',
+        'length' => 255,
+      ),
+      'timestamp' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0
+      ),
+    ),
+    'indexes' => array(
+      'uid' => array('uid'),
+      'entity_uri' => array('entity_type', 'entity_id'),
+      'timestamp' => array('timestamp'),
+    ),
+    'primary key' => array('aid'),
+  );
+
+  return $schema;
+}
+
+/**
+ * Add fields type and title
+ */
+function annotate_update_7001() {
+  
+}
+
+/**
+ * Transform format field to textual version
+ * 
+ * @see node_update_7006()
+ */
+function _annotate_update_7000() {
+  $ret = array();
+
+  db_add_field($ret, 'annotate', 'format', $field, $keys);
+
+  $filter_default = variable_get('filter_default_format', 1);
+  $filters = array(
+    0 => 'plain_text',
+    1 => 'filtered_html',
+    2 => 'full_html',
+  );
+}
+
+function annotate_update_6202() {
+  $ret = array();
+  db_add_index($ret, 'annotate', 'timestamp', array('timestamp'));
+  return $ret;
+}
+
+/**
+ * Add field aid and make it primary key
+ */
+function annotate_update_6201() {
+  $ret = array();
+
+  $field = array(
+    'type' => 'int',
+    'unsigned' => TRUE,
+    'not null' => TRUE,
+    'default' => 0,
+    'description' => t('Primary key for annotate module'),
+  );
+  $keys['indexes'] = array('aid' => array('aid'));
+  db_drop_primary_key($ret, 'annotate');
+  db_add_field($ret, 'annotate', 'aid', $field, $keys);
+
+  // Thanks to comment of splash112
+  // on http://api.drupal.org/api/drupal/includes--database.pgsql.inc/function/db_add_field/6#comment-16549
+  db_change_field($ret, 'annotate', 'aid', 'aid', array(
+    'type' => 'serial',
+      ), array(
+    'primary key' => array('aid'),
+      )
+  );
+  return $ret;
+}
+
+function annotate_update_6200() {
+  $ret = array();
+  db_rename_table($ret, 'annotations', 'annotate');
+  return $ret;
+}
+
+function annotate_update_6101() {
+  // delete menu 'admin/settings/annotate']
+  menu_rebuild();
+
+  // we need to change variables into content type related vars
+  $annotate_nodetypes = variable_get('annotate_nodetypes', array('story'));
+  $annotate_nodetypes_multiple = variable_get('annotate_nodetypes_multiple', array());
+
+  $annotate_show_expanded = variable_get('annotate_show_expanded', FALSE);
+  $annotate_show_multi_expanded = variable_get('annotate_show_multi_expanded', FALSE);
+
+  $annotate_visibility = variable_get('annotate_visibility', 0);
+  $annotate_visibility_force = variable_get('annotate_visibility_force', FALSE);
+
+  $types = node_get_types();
+  foreach ($annotate_nodetypes as $type) {
+    if (isset($types[$type])) {
+      variable_set('annotate_allow_' . $type, TRUE);
+      variable_set('annotate_display_expanded_' . $type, $annotate_show_expanded);
+      variable_set('annotate_allow_multiple_' . $type, in_array($type, $annotate_nodetypes_multiple));
+      variable_set('annotate_display_multi_expanded_' . $type, $annotate_show_expanded);
+      variable_set('annotate_default_visibility_' . $type, $annotate_visibility);
+      variable_set('annotate_visibility_force_' . $type, $annotate_visibility_force);
+    }
+  }
+
+  variable_del('annotate_show_expanded');
+  variable_del('annotate_nodetypes');
+  variable_del('annotate_show_multi_expanded');
+  variable_del('annotate_nodetypes_multiple');
+  variable_del('annotate_visibility');
+  variable_del('annotate_visibility_force');
+
+  return array();
+}
+
+function annotate_update_6100() {
+  $ret = array();
+  db_drop_primary_key($ret, 'annotations');
+  db_add_primary_key($ret, 'annotations', array('uid', 'nid', 'timestamp'));
+  return $ret;
+}
+
+/**
+ * Implementation of hook_uninstall()
+ */
+function annotate_uninstall() {
+  variable_del('annotate_show_expanded');
+  variable_del('annotate_nodetypes');
+  variable_del('annotate_nodetypes_multiple');
+}

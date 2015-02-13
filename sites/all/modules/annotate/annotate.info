@@ -1,0 +1,24 @@
+name = Annotate 
+description = Allows users to annotate nodes.
+package = Annotate
+
+files[] = annotate.module
+files[] = annotate.controller.inc
+
+dependencies[] = views
+
+core = 7.x
+
+; Views handlers
+files[] = views/annotate_handler_field_note.inc
+files[] = views/annotate_handler_field_note_link_view.inc
+files[] = views/annotate_handler_field_note_link_edit.inc
+files[] = views/annotate_handler_field_note_link_delete.inc
+files[] = views/annotate_handler_field_entity.inc
+
+; Information added by drupal.org packaging script on 2013-09-30
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "annotate"
+datestamp = "1380553865"
+

@@ -1,0 +1,829 @@
+<?php
+
+/**
+ * @file
+ * Let users add private annotations to nodes.
+ *
+ * Adds a text field when a node is displayed
+ * so that authenticated users may make notes.
+ */
+define('ANNOTATE_CREATE_ANNOTATION', 'create annotation');
+define('ANNOTATE_READ_ANNOTATION', 'read annotation');
+
+define('ANNOTATE_ENUM_VISIBILITY_PRIVATE', 0);
+define('ANNOTATE_ENUM_VISIBILITY_EDITOR', 1);
+define('ANNOTATE_ENUM_VISIBILITY_OTHERS', 2);
+define('ANNOTATE_ENUM_VISIBILITY_COLLABORATORS', 3);
+
+define('ANNOTATE_TYPE_FIELDS_WEIGHT', 30);
+
+/**
+ * Implements hook_help().
+ */
+function annotate_help($path, $arg) {
+  if ($path == 'admin/help#annotate') {
+    return t('Annotate help.');
+  }
+}
+
+function annotate_entity_info() {
+  $return['annotate'] = array(
+    'label' => t('Annotate'),
+    'base table' => 'annotate',
+    'uri callback' => 'annotate_uri',
+    'fieldable' => TRUE,
+    'controller class' => 'AnnotateController',
+    'entity keys' => array(
+      'id' => 'aid',
+      'bundle' => 'type',
+      'label' => 'title',
+    ),
+    'bundle keys' => array(
+      'bundle' => 'type',
+    ),
+    'view modes' => Array
+      (
+      'full' => Array
+        (
+        'label' => 'Full annotation'
+      ),
+    ),
+    'load hook' => 'annotate_load',
+  );
+
+  foreach (annotate_types() as $type => $info) {
+    $return['annotate']['bundles'][$type] = array(
+      'label' => $info->name,
+      'admin' => array(
+        'path' => 'admin/structure/annotate/manage/%annotate_type',
+        'real path' => 'admin/structure/annotate/manage/' . str_replace('-', '_', $type),
+        'bundle argument' => 4,
+        'access argument' => array('administer site'),
+      ),
+    );
+  }
+
+  return $return;
+}
+
+function annotate_types() {
+  $types = &drupal_static(__FUNCTION__);
+
+  if (empty($types)) {
+    $types = array(
+      'private' => (object) array(
+        'type' => 'private',
+        'name' => t('Private note'),
+        'description' => t('A private note on a node'),
+      ),
+      'editor' => (object) array(
+        'type' => 'editor',
+        'name' => t('An editorial note'),
+        'description' => t('A note to share with the node editor'),
+      ),
+    );
+  }
+  return $types;
+}
+
+function annotate_type_load($type) {
+  $types = annotate_types();
+
+  $type = str_replace('-', '_', $type);
+  return isset($types[$type]) ? $types[$type] : FALSE;
+}
+
+function annotate_field_extra_fields() {
+  //TODO Add other fields: Note, Format, Created, UID, NID
+  $extra = array();
+  foreach (annotate_types() as $type => $info) {
+    $extra['annotate'][$type] = array(
+      'form' => array(
+        'title' => array(
+          'label' => t('Title'),
+          'description' => t('A short summary of the annotation'),
+          'weight' => -5,
+        )
+      ),
+      'display' => array(
+        'title' => array(
+          'label' => t('Title'),
+          'description' => t('A short summary of the annotation'),
+          'weight' => -5,
+        )
+      ),
+    );
+  }
+  return $extra;
+}
+
+/**
+ * Implements hook_init().
+ */
+function annotate_init() {
+  //_annotate_has_ctools();
+}
+
+/**
+ * Insert ctools toolset
+ */
+function _annotate_has_ctools() {
+  if (function_exists('ctools_include')) {
+    // Include the CTools tools that we need.
+    ctools_include('ajax');
+    ctools_include('modal');
+
+    // Add CTools' javascript to the page.
+    ctools_modal_add_js();
+    return TRUE;
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function annotate_menu() {
+  $items = array();
+  // We need the annotation type, entity type and entity id
+  $items['annotate/add/%annotate_type/%/%'] = array(
+    'title' => 'Add annotation',
+    'page callback' => 'annotate_add',
+    'page arguments' => array(2, 3, 4),
+    'access arguments' => array(ANNOTATE_READ_ANNOTATION),
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['annotate/my'] = array(
+    'title' => 'My annotations',
+    'page callback' => 'annotate_my',
+    'access arguments' => array(ANNOTATE_READ_ANNOTATION),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['annotate/%annotate'] = array(
+    'title callback' => 'annotate_page_title',
+    'title arguments' => array(1),
+    'page callback' => 'annotate_page_view',
+    'page arguments' => array(1),
+    'access arguments' => array(ANNOTATE_READ_ANNOTATION),
+    'type' => MENU_CALLBACK,
+  );
+  $items['annotate/%annotate/view'] = array(
+    'title' => 'View',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -5,
+  );
+
+  $items['annotate/%annotate/edit'] = array(
+    'title' => 'Edit',
+    'type' => MENU_LOCAL_TASK,
+    'page callback' => 'annotate_page_edit',
+    'page arguments' => array(1),
+    'access arguments' => array(ANNOTATE_READ_ANNOTATION),
+    'context' => MENU_CONTEXT_PAGE | MENU_CONTEXT_INLINE,
+    'weight' => 0,
+  );
+
+  $items['annotate/%annotate/delete'] = array(
+    'title' => 'Delete annotation',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('annotate_delete_confirm', 1),
+    'access callback' => 'annotate_may_delete',
+    'access arguments' => array(1),
+    'type' => MENU_LOCAL_TASK,
+    'context' => MENU_CONTEXT_INLINE,
+    'weight' => 5,
+  );
+
+  $items['admin/structure/annotate'] = array(
+    'title' => 'Manage annotations',
+    'description' => 'Manage annotations',
+    'page callback' => 'annotate_overview_types',
+    'access arguments' => array('administer site'),
+  );
+  // TODO why is this needed? If removed the next menu is not available?!?
+  $items['admin/structure/annotate/manage'] = array(
+    'title' => 'Manage annotations',
+    'description' => 'Manage annotations',
+    'page callback' => 'annotate_overview_types',
+    'access arguments' => array('administer site'),
+  );
+  $items['admin/structure/annotate/manage/%annotate_type'] = array(
+    'title' => 'View annotate type',
+    'title callback' => 'annotate_type_page_title',
+    'title arguments' => array(4),
+    'page callback' => 'annotate_information',
+    'page arguments' => array(4),
+    'access arguments' => array('administer site'),
+  );
+  $items['admin/structure/annotate/manage/%annotate_type/view'] = array(
+    'title' => 'View annotate type',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+  );
+
+  return $items;
+}
+
+function annotate_page_title($annotation) {
+  return $annotation->title;
+}
+
+function annotate_page_view($entity, $view_mode = 'full') {
+  $entity->content = array();
+
+  if ($view_mode == 'teaser') {
+    // Do we have this?
+  }
+
+  $entity->content['note'] = array(
+    '#markup' => check_markup($entity->note, $entity->note_format)
+  );
+  field_attach_prepare_view('annotate', array($entity->aid => $entity), $view_mode);
+  entity_prepare_view('annotate', array($entity->aid => $entity));
+
+  $entity->content += field_attach_view('annotate', $entity, $view_mode);
+
+  return $entity->content;
+}
+
+function annotate_page_edit($annotate) {
+  drupal_set_title($annotate->title);
+
+  return drupal_get_form('annotate_form_' . $annotate->type, $annotate);
+}
+
+function annotate_overview_types() {
+  $items = array();
+  foreach (annotate_types() as $type => $info) {
+    $type_url_str = str_replace('_', '-', $type);
+    $label = t('View @type', array('@type' => $info->name));
+    $items[] = l($label, 'admin/structure/annotate/manage/' . $type_url_str);
+  }
+  return theme('item_list', array('items' => $items));
+}
+
+function annotate_type_page_title($type) {
+  return t('Manage @type', array('@type' => $type->name));
+}
+
+function annotate_information($type) {
+  return $type->name . ': ' . $type->description;
+}
+
+function annotate_my() {
+  global $user;
+  drupal_goto('user/' . $user->uid . '/annotate');
+}
+
+function annotate_forms() {
+  $forms = array();
+  foreach (annotate_types() as $type => $info) {
+    $forms["annotate_form_$type"]['callback'] = 'annotate_form';
+  }
+  return $forms;
+}
+
+function annotate_add($annotate_type, $entity_type, $entity_id) {
+  global $user;
+  $annotate = entity_get_controller('annotate')->create($annotate_type->type, $entity_type, $entity_id);
+
+  drupal_set_title("Create $annotate_type->name");
+  return drupal_get_form("annotate_form_$annotate_type->type", $annotate);
+}
+
+/**
+ * The current user is allowed to edit his own one
+ */
+function annotate_may_edit($note) {
+  global $user;
+  return $user->uid == 1 || $user->uid == $note->uid;
+}
+
+/**
+ * The current user is allowed to delete his own one
+ */
+function annotate_may_delete($note) {
+  global $user;
+  return $user->uid == 1 || $user->uid == $note->uid;
+}
+
+/**
+ * Implements hook_perm().
+ */
+function annotate_permissions() {
+  return array(
+    ANNOTATE_CREATE_ANNOTATION => array(
+      'title' => t('Create annotation')
+    ),
+    ANNOTATE_READ_ANNOTATION => array(
+      'title' => t('Read annotation')
+    ),
+  );
+}
+
+/**
+ * Implements hook_uri().
+ *
+ * @param type $note
+ * @return path
+ */
+function annotate_uri($note) {
+  return array(
+    'path' => 'annotate/' . $note->aid,
+  );
+}
+
+function annotate_form($form, &$form_state, $note = NULL) {
+  $form['#id'] = 'annotate-form';
+  $form['#annotate'] = $note;
+  $form['#validate'][] = 'annotate_form_validate';
+  $form_state['annotate'] = $note;
+
+  $form['title'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Title'),
+    '#default_value' => $note->title,
+    '#required' => TRUE,
+  );
+
+  $form['note'] = array(
+    '#type' => 'text_format',
+    '#format' => $note->note_format,
+    '#title' => t('Notes'),
+    '#default_value' => $note->note,
+    '#required' => TRUE,
+    '#description' => t('Make your personal annotations about this content here. When marked private only you (and the site administrator) will be able to see them.'),
+  );
+
+  $form['buttons'] = array();
+  $form['buttons']['#weight'] = 100;
+  $form['buttons']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => $note->timestamp ? t('Update') : t('Save'),
+    '#weight' => 5,
+  );
+
+  if (!empty($note->aid)) {
+    $form['buttons']['delete'] = array(
+      '#type' => 'submit',
+      '#value' => t('Delete'),
+      '#weight' => 15,
+      '#submit' => array('annotate_form_delete_submit'),
+    );
+  }
+
+  field_attach_form('annotate', $note, $form, $form_state);
+
+  return $form;
+}
+
+function annotate_form_validate($form, &$form_state) {
+  $annotate = $form_state['annotate'];
+
+  field_attach_form_validate('annotate', $annotate, $form, $form_state);
+}
+
+/**
+ * Implements of hook_submit().
+ */
+function annotate_form_submit($form, &$form_state) {
+  global $user;
+  $annotate = &$form_state['annotate'];
+
+  if (empty($annotate->uid)) {
+    $annotate->uid = $user->uid;
+  }
+  $annotate->title = $form_state['values']['title'];
+  $annotate->note = $form_state['values']['note']['value'];
+  $annotate->note_format = $form_state['values']['note']['format'];
+
+  field_attach_submit('annotate', $annotate, $form, $form_state);
+
+  annotate_save($annotate);
+
+  drupal_set_message(t('Your annotation was saved.'));
+  $form_state['#redirect'] = annotate_uri($annotate);
+}
+
+function annotate_form_delete_submit($form, &$form_state) {
+  $destination = array();
+  if (isset($_GET['destination'])) {
+    $destination = drupal_get_destination();
+    unset($_GET['destination']);
+  }
+  $note = $form['#annotate'];
+  $form_state['redirect'] = 'annotate/' . $note->aid . '/delete';
+}
+
+function annotate_delete_confirm($form, &$form_state, $note) {
+  $form = array();
+
+  $length = 30;
+  $ellips = '';
+  if (strlen($note->note) > $length) {
+    $ellips = '...';
+  }
+  $text = check_plain(substr($note->note, 0, $length)) . $ellips;
+
+  $form['info'] = array(
+    '#type' => 'hidden',
+    '#value' => $text,
+  );
+  $form['aid'] = array(
+    '#type' => 'hidden',
+    '#value' => $note->aid,
+  );
+
+  $ref = reset(entity_load($note->entity_type, array($note->entity_id)));
+  $ref_uri = entity_uri($note->entity_type, $ref);
+
+  $form['entity_uri'] = array(
+    '#type' => 'hidden',
+    '#value' => $ref_uri,
+  );
+
+  return confirm_form($form
+          , t('Are you sure you want to delete note %name?', array('%name' => $text))
+          , 'to-what'
+          , t('This action cannot be undone.')
+          , t('Delete')
+          , t('Cancel')
+  );
+}
+
+/**
+ * Deletion an annotation
+ */
+function annotate_delete_confirm_submit($form, &$form_state) {
+  $note = annotate_load($form_state['values']['aid']);
+  annotate_delete($note);
+
+  drupal_set_message(t('The note %name has been removed.', array('%name' => $form_state['values']['info'])));
+  $form_state['redirect'] = $form_state['values']['entity_uri'];
+  return;
+}
+
+function annotate_delete($note) {
+  return annotate_delete_multiple(array($note->aid));
+}
+
+function annotate_delete_multiple($aids) {
+  return entity_get_controller('annotate')->delete($aids);
+}
+
+/**
+ * Implements hook_node_view().
+ *
+ * @global type $user
+ * @param type $node
+ * @param type $build_mode
+ */
+function annotate_node_view($node, $build_mode, $langcode) {
+
+  /*
+    if (!_annotate_variable_get($o_note, 'annotate_visibility_force', 0)) {
+    // This is only needed if default visibility settings are not forced.
+    $options = _annotate_get_visibility_list();
+
+    $form['visibility'] = array(
+    '#type' => 'select',
+    '#title' => t('Visibility'),
+    '#default_value' => isset($visibility) ? $visibility : _annotate_variable_get($o_note, 'annotate_default_visibility', ANNOTATE_ENUM_VISIBILITY_PRIVATE),
+    '#options' => $options,
+    '#description' => t('Set the visibility of this annotation'),
+    );
+    }
+    else {
+    $form['visibility'] = array(
+    '#type' => 'value',
+    '#value' => _annotate_variable_get($o_note, 'annotate_default_visibility', 0),
+    );
+    }
+
+   */
+
+
+
+
+//$node->content['links']['annotate'] = l("HHHH", '/');
+  _annotate_links('node', $node);
+
+  global $user;
+  // No annotations for teaser or anonymous users
+  if ($build_mode != 'print' || $user->uid == 0) {
+    return;
+  }
+
+  // No form when user may not create an annotation
+  if (!user_access(ANNOTATE_READ_ANNOTATION)) {
+    return;
+  }
+
+  if (!_annotate_variable_get($node, 'annotate_allow', 0)) {
+    return;
+  }
+
+  // TODO: remove this as we are now totally on views.
+  if (isset($node->print_display) && $node->print_display) {
+    // We put all annotation into the printer friendly page
+    $node->content['annotate_print'] = array(
+      '#title' => t('Annotations'),
+      '#prefix' => '<div class="plain">',
+      '#postfix' => '</div>',
+      '#markup' => "This should contain the annotations made for the node",
+      '#weight' => 50,
+    );
+  }
+}
+
+/**
+ * Implements hook_node_insert().
+ */
+function annotate_node_insert($node) {
+  if (isset($node->devel_generate)) {
+    _annotate_generate_notes($node);
+  }
+}
+
+/**
+ * Implements hook_node_delete().
+ */
+function annotate_node_delete($node) {
+  $and = db_and()->condition('entity_type', 'node')->condition('entity_id', $node->nid);
+  db_delete('annotate')->condition($and)->execute();
+}
+
+function _annotate_links($entity_type, $entity) {
+  $ids = entity_extract_ids($entity_type, $entity);
+  $eid = array_shift($ids);
+  if ($entity_type == 'node') {
+    foreach (annotate_types() as $type => $info) {
+      $type_url = str_replace('_', '-', $type);
+      $links[$type] = array(
+        'title' => t("Add $info->name"),
+        'href' => "annotate/add/$type_url/$entity_type/$eid",
+        'attributes' => array(
+          'title' => t("Add a new annotation to this $entity_type"),
+        ),
+      );
+    }
+    $entity->content['links']['annotate'] = array(
+      '#theme' => 'links__node',
+      '#links' => $links,
+      '#attributes' => array('class' => array('links', 'inline')),
+    );
+  }
+}
+
+/**
+ * Generate random notes through devel.
+ *
+ * TODO: respect access permissions
+ * TODO: generate formatted content
+ * TODO: patch devel to implement some user_delete() logic
+ *
+ * @param $node
+ * @param $users
+ */
+function _annotate_generate_notes($node) {
+  // Begin patch devel_generate
+  // Delete all annotations due to devel_generate not implementing user_delete
+  // NOTE: this is not batch safe
+  static $run_once;
+  if (!$run_once) {
+    $run_once = TRUE;
+    db_query('DELETE FROM {annotate}');
+    drupal_set_message(t("Deleted all annotations"));
+  }
+  // End patch devel_generate
+  // We need to respect the config settings
+  $type = $node->type;
+  if (!variable_get('annotate_allow_' . $type, FALSE))
+    return;
+
+  $users = $node->devel_generate['users'];
+
+  // delete uid == 0
+  $u = array();
+  foreach ($users as $uid) {
+    if ($uid)
+      $u[] = $uid;
+  }
+  $users = $u;
+  $allow_multiple = variable_get('annotate_allow_multiple_' . $type, FALSE);
+  $default_visibility = variable_get('annotate_default_visibility_' . $type, 0);
+  $visibility_force = variable_get('annotate_visibility_force_' . $type, 0);
+
+  $visibilities = array_keys(_annotate_get_visibility_list());
+  $visibility_max = count($visibilities);
+  $user_count = count($users);
+  // Generate between 0-10 notes
+  $note_count = mt_rand(0, 10);
+
+  if (!$allow_multiple) {
+    // No more notes then users
+    $note_count = min($note_count, $user_count);
+    if ($note_count) {
+      $selects = array_rand($users, $note_count);
+    }
+  }
+  for ($i = 0; $i < $note_count; $i++) {
+    $note = array();
+    if (!$allow_multiple) {
+      $note['uid'] = $users[$selects[$i]];
+    }
+    else {
+      $note['uid'] = $users[mt_rand(0, $user_count - 1)];
+    }
+    $note['entity_type'] = 'node';
+    $note['entity_id'] = $node->nid;
+    $note['type'] = 'private';
+    $note['title'] = devel_create_greeking(5);
+    $note['note_format'] = 'plain_text';
+    $note['note'] = devel_create_greeking(25);
+    $note['timestamp'] = $node->created + 1 + $i;
+    $note = (object) $note;
+    annotate_save($note);
+  }
+}
+
+function annotate_load($aid, $vid = NULL, $reset = FALSE) {
+  $aids = (isset($aid) ? array($aid) : array());
+  $conditions = (isset($vid) ? array('vid' => $vid) : array());
+  return reset(annotate_load_multiple($aids, $conditions, $reset));
+}
+
+function annotate_load_multiple($aids, $conditions = array(), $reset = FALSE) {
+  return entity_load('annotate', $aids, $conditions, $reset);
+}
+
+/**
+ * Implements of hook_form_alter
+ *
+ * We adjust all nodetype forms by adding annotate settings
+ */
+function annotate_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'node_type_form') {
+    $form['annotate'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Annotate settings'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+      '#weight' => (function_exists('content_extra_field_weight') && isset($form['type'])) ? content_extra_field_weight($form['type']['#value'], 'annotate') : ANNOTATE_TYPE_FIELDS_WEIGHT,
+    );
+
+    $form['annotate']['annotate_allow'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Users may annotate this node type'),
+      '#description' => t('A text field will be available to make user-specific notes.'),
+      '#default_value' => variable_get('annotate_allow_' . $form['#node_type']->type, 0),
+    );
+
+    $form['annotate']['annotate_display_expanded'] = array(
+      '#type' => 'radios',
+      '#title' => t('Show the annotation form expanded'),
+      '#options' => array(1 => t('Yes'), 0 => t('No')),
+      '#default_value' => variable_get('annotate_display_expanded_' . $form['#node_type']->type, 0),
+    );
+
+    $form['annotate']['annotate_allow_multiple'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Allow multiple annotations per user for this node type'),
+      '#description' => t('A text field will be available to make user-specific notes.'),
+      '#default_value' => variable_get('annotate_allow_multiple_' . $form['#node_type']->type, 0),
+    );
+
+    $form['annotate']['annotate_display_multi_expanded'] = array(
+      '#type' => 'radios',
+      '#title' => t('Show the multiple annotation fieldset expanded'),
+      '#description' => t('The annotation is not collapsed by default'),
+      '#options' => array(1 => t('Yes'), 0 => t('No')),
+      '#default_value' => variable_get('annotate_display_multi_expanded_' . $form['#node_type']->type, 0),
+    );
+
+    $options = _annotate_get_visibility_list();
+
+    $form['annotate']['annotate_default_visibility'] = array(
+      '#type' => 'radios',
+      '#title' => t('Default visibility'),
+      '#description' => t('Default visibility of annotations'),
+      '#options' => $options,
+      '#default_value' => variable_get('annotate_default_visibility_' . $form['#node_type']->type, 0),
+    );
+
+    $form['annotate']['annotate_visibility_force'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Force default visibility.'),
+      '#description' => t('This will hide the visibility option on annotations and force the site-wide default visibility setting above. Note that changing this will not affect existing annotation visibility settings - it will only affect new annotations.'),
+      '#default_value' => variable_get('annotate_visibility_force_' . $form['#node_type']->type, 0),
+    );
+  }
+}
+
+/**
+ * Implements hook_user().
+ */
+function annotate_user_delete($account) {
+  $uid = $account->uid;
+  db_delete('annotate')->condition('uid', $uid);
+  drupal_set_message(t('Annotations deleted for user %uid.', array('%uid' => $uid)));
+}
+
+/**
+ * Visibility list used for content type and viewssettings
+ *
+ * @see annotate_handler_field_visibility()
+ * @return array of key value pairs
+ */
+function _annotate_get_visibility_list() {
+  return array(
+    ANNOTATE_ENUM_VISIBILITY_PRIVATE => t('Private'),
+    ANNOTATE_ENUM_VISIBILITY_EDITOR => t('Node editor'),
+    ANNOTATE_ENUM_VISIBILITY_COLLABORATORS => t('Node annotators'),
+    ANNOTATE_ENUM_VISIBILITY_OTHERS => t('Others'),
+  );
+}
+
+function annotate_save($annotate) {
+  return entity_get_controller('annotate')->save($annotate);
+}
+
+/* ========== PRIVATE FUNCTIONS ========== */
+/*
+  $filter =
+  "    a.uid = %d"
+  . " OR (a.visibility = " . ANNOTATE_ENUM_VISIBILITY_EDITOR . " AND %d = n.uid)"
+  . " OR a.visibility = " . ANNOTATE_ENUM_VISIBILITY_OTHERS;
+
+  $is_collaborator = _annotate_exists_by_node_by_user($nid, $uid);
+
+  if ($is_collaborator) {
+  $filter .= " OR a.visibility = " . ANNOTATE_ENUM_VISIBILITY_COLLABORATORS;
+  }
+  // AND-wrap
+  $filter = " AND (" . $filter . ")";
+  }
+  $sql .= $filter;
+  $sql .= ' ORDER BY timestamp';
+  $sql = db_rewrite_sql($sql);
+  $result = db_query($sql, $nid, $uid, $uid);
+
+  return $result;
+  }
+ */
+
+function _annotate_visibility_to_text($visibility) {
+  static $list;
+
+  if (!$list) {
+    $list = _annotate_get_visibility_list();
+  }
+
+  return $list[$visibility];
+}
+
+/**
+ *
+ * @param $obj
+ *   Either a node or a note object
+ * @param $variable
+ * @param $default
+ *
+ * @return
+ *   requested variable
+ */
+function _annotate_variable_get(&$obj, $variable, $default=0) {
+  return variable_get($variable . '_' . $obj->type, $default);
+}
+
+/*
+ * List of variable names used
+ *
+ * annotate_allow_$type
+ * annotate_display_expanded_$type
+ * annotate_allow_multiple_$type
+ * annotate_display_multi_expanded_$type expand the annotation form(s)
+ * annotate_visibility_$type fine tune the audience
+ * annotate_visibility_force_$type disallow audience
+ */
+
+function _annotate_variables() {
+  return array(
+    'annotate_allow' => "Display the annotation form",
+    'annotate_display_expanded' => "Expand the (list of) annotation form(s)",
+    'annotate_allow_multiple' => "Allow multiple annotations per user",
+    'annotate_display_multi_expanded' => "Expand the list of annotations",
+    'annotate_default_visibility' => "Set the default visibility",
+    'annotate_visibility_force' => "For the default visibility",
+  );
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function annotate_views_api() {
+  return array(
+    'api' => 2.0,
+    'path' => drupal_get_path('module', 'annotate') . '/views',
+  );
+}
